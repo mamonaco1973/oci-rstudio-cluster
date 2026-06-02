@@ -9,6 +9,15 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get update -y
 apt-get install -y software-properties-common dirmngr
+
+# This section determines which version of R gets installed
+# Add CRAN repo to get latest R instead of Ubuntu's older bundled version
+
+wget -qO- https://cloud.r-project.org/bin/linux/ubuntu/marutter_pubkey.asc \
+  | gpg --dearmor -o /usr/share/keyrings/r-project.gpg
+echo "deb [signed-by=/usr/share/keyrings/r-project.gpg] https://cloud.r-project.org/bin/linux/ubuntu noble-cran40/" \
+  | tee /etc/apt/sources.list.d/r-project.list
+
 apt-get update -y
 apt-get install -y r-base r-base-dev
 
