@@ -49,8 +49,6 @@ variable "subnet_ocid" {
 
 # ------------------------------------------------------------------------------
 # Oracle-OCI Source Block
-# Launches a temporary OCI instance, runs provisioners, then saves the result
-# as a custom compute image in the compartment.
 # ------------------------------------------------------------------------------
 
 source "oracle-oci" "rstudio" {
@@ -76,6 +74,7 @@ source "oracle-oci" "rstudio" {
 
 # ------------------------------------------------------------------------------
 # Build Block: Provisioning Scripts
+# Mirrors aws-rstudio-cluster/03-packer: base packages, OCI CLI, RStudio.
 # Packages are baked here so rstudio_booter.sh at runtime only handles
 # domain join, FSS mounts, and R library path configuration.
 # ------------------------------------------------------------------------------
@@ -89,7 +88,7 @@ build {
     execute_command = "sudo -E bash '{{.Path}}'"
   }
 
-  # Install OCI CLI into /opt/oci-venv.
+  # Install OCI CLI (equivalent to AWS CLI in the AWS build).
   provisioner "shell" {
     script          = "./ocicli.sh"
     execute_command = "sudo -E bash '{{.Path}}'"
@@ -98,36 +97,6 @@ build {
   # Install R base and RStudio Server with PAM/AD config.
   provisioner "shell" {
     script          = "./rstudio.sh"
-    execute_command = "sudo -E bash '{{.Path}}'"
-  }
-
-  # Install AWS CLI v2.
-  provisioner "shell" {
-    script          = "./awscli.sh"
-    execute_command = "sudo -E bash '{{.Path}}'"
-  }
-
-  # Install Azure CLI.
-  provisioner "shell" {
-    script          = "./azcli.sh"
-    execute_command = "sudo -E bash '{{.Path}}'"
-  }
-
-  # Install Google Cloud CLI.
-  provisioner "shell" {
-    script          = "./gcloudcli.sh"
-    execute_command = "sudo -E bash '{{.Path}}'"
-  }
-
-  # Install HashiCorp tools (Terraform, Packer).
-  provisioner "shell" {
-    script          = "./hashicorp.sh"
-    execute_command = "sudo -E bash '{{.Path}}'"
-  }
-
-  # Install Docker CE.
-  provisioner "shell" {
-    script          = "./docker.sh"
     execute_command = "sudo -E bash '{{.Path}}'"
   }
 }

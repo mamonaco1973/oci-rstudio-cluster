@@ -18,16 +18,6 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
-# Snap seeds asynchronously on boot — removing before seed completes returns
-# exit code 10 and fails the Packer build under set -euo pipefail.
-snap wait system seed.loaded
-
-snap remove --purge core22 || true
-snap remove --purge snapd  || true
-apt-get purge -y snapd
-echo -e "Package: snapd\nPin: release *\nPin-Priority: -10" \
-  | tee /etc/apt/preferences.d/nosnap.pref
-
 apt-get update -y
 
 echo "=== Phase 1: Base utilities and AD join tools ==="
