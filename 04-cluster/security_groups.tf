@@ -1,11 +1,9 @@
 # ==============================================================================
 # Network Security Groups: RStudio Cluster Instances
 # ------------------------------------------------------------------------------
-# SSH NSG is attached to instance pool instances for management access via
-# the OCI Bastion in 01-directory.
-# RStudio port 8787 is controlled at the security list level (cluster_sl in
-# 01-directory/networking.tf) rather than via NSG — the LB communicates with
-# all backends in the pool and the security list is the right scope.
+# SSH NSG attached to instance pool instances for management access via
+# the OCI Bastion. RStudio port 8787 is controlled at the security list
+# level (cluster_sl in 01-directory/networking.tf).
 # ==============================================================================
 
 resource "oci_core_network_security_group" "ssh_nsg" {

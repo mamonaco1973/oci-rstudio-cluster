@@ -1,8 +1,8 @@
 # ==============================================================================
 # Provider and Data Sources
 # ------------------------------------------------------------------------------
-# Configures the OCI provider and reads outputs from 01-directory via
-# terraform_remote_state (compartment, VCN, subnets, credentials, SSH key).
+# Reads outputs from both 01-directory (credentials, subnets) and
+# 02-servers (FSS mount target IP) via terraform_remote_state.
 # ==============================================================================
 
 terraform {
@@ -10,10 +10,6 @@ terraform {
     oci = {
       source  = "oracle/oci"
       version = "~> 6.0"
-    }
-    random = {
-      source  = "hashicorp/random"
-      version = "~> 3.0"
     }
   }
 }
@@ -33,6 +29,18 @@ data "terraform_remote_state" "directory" {
   }
 }
 
+# ==============================================================================
+# Remote State: 02-servers
+# Provides the FSS mount target IP so cluster instances can mount /nfs.
+# ==============================================================================
+
+data "terraform_remote_state" "servers" {
+  backend = "local"
+  config = {
+    path = "../02-servers/terraform.tfstate"
+  }
+}
+
 locals {
   compartment_ocid    = data.terraform_remote_state.directory.outputs.compartment_ocid
   vcn_id              = data.terraform_remote_state.directory.outputs.vcn_id
@@ -40,7 +48,7 @@ locals {
   cluster_subnet_ocid = data.terraform_remote_state.directory.outputs.cluster_subnet_ocid
   admin_password      = data.terraform_remote_state.directory.outputs.admin_password
   ssh_public_key      = data.terraform_remote_state.directory.outputs.ssh_public_key
-  dc_private_ip       = data.terraform_remote_state.directory.outputs.dc_private_ip
+  mount_target_ip     = data.terraform_remote_state.servers.outputs.mount_target_ip
 }
 
 # ==============================================================================

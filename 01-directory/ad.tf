@@ -132,3 +132,8 @@ output "windows_local_admin_password" {
   value       = local.windows_local_admin_password
   sensitive   = true
 }
+
+output "cluster_subnet_ocid" {
+  description = "OCID of cluster-subnet for RStudio instance pool placement."
+  value       = oci_core_subnet.cluster_subnet.id
+}

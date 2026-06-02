@@ -26,13 +26,3 @@ variable "user_base_dn" {
   type        = string
   default     = "CN=Users,DC=mcloud,DC=mikecloud,DC=com"
 }
-
-# ==============================================================================
-# Packer Image
-# OCID of the RStudio server image built by 02-packer.
-# ==============================================================================
-
-variable "rstudio_image_ocid" {
-  description = "OCID of the Packer-built RStudio server image."
-  type        = string
-}

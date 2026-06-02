@@ -29,7 +29,7 @@ variable "user_base_dn" {
 
 # ==============================================================================
 # Packer Image
-# OCID of the RStudio server image built by 02-packer.
+# OCID of the RStudio server image built by 03-packer.
 # ==============================================================================
 
 variable "rstudio_image_ocid" {

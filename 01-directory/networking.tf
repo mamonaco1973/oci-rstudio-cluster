@@ -2,15 +2,16 @@
 # Network Baseline: mini-AD VCN
 # ------------------------------------------------------------------------------
 # Purpose:
-#   - Builds the VCN for the mini-AD quick start.
+#   - Builds the VCN for the RStudio cluster.
 #
 # Scope:
 #   - One VCN with:
-#       - Two public "vm" subnets for client workloads.
+#       - One public "vm" subnet for client workloads and the Load Balancer.
+#       - One private "cluster" subnet for RStudio instance pool instances.
 #       - One private "ad" subnet for the Samba 4 domain controller.
 #   - Internet egress:
-#       - Public subnets route to an Internet Gateway.
-#       - Private subnet routes to a NAT Gateway for outbound-only access.
+#       - Public subnet routes to an Internet Gateway.
+#       - Private subnets route to a NAT Gateway for outbound-only access.
 #
 # Notes:
 #   - OCI security lists attach at the subnet level (unlike AWS SGs per instance).
@@ -25,7 +26,6 @@ resource "oci_core_vcn" "ad_vcn" {
   compartment_id = var.compartment_ocid
   cidr_block     = "10.0.0.0/24"
   display_name   = var.vcn_name
-  # dns_label must be alphanumeric <= 15 chars
   dns_label      = "miniadvcn"
 }
 
@@ -41,7 +41,7 @@ resource "oci_core_internet_gateway" "ad_igw" {
 }
 
 # ==============================================================================
-# NAT Gateway – outbound-only internet access for the private AD subnet
+# NAT Gateway — outbound-only internet access for private subnets
 # ==============================================================================
 
 resource "oci_core_nat_gateway" "ad_nat" {
@@ -81,17 +81,33 @@ resource "oci_core_route_table" "private_rt" {
 # ==============================================================================
 # Security Lists
 # ------------------------------------------------------------------------------
-# Public VM subnet: SSH (22), RDP (3389), NFS (111/2048-2050), SMB (445).
-#   NFS rules allow the Linux instance to reach the FSS mount target
-#   (both in vm-subnet). SMB allows Windows to reach the Samba gateway.
-# Private AD subnet: Open ingress within VCN CIDR so clients can reach AD ports.
-#   The module NSG handles granular port control on the DC instance itself.
+# Public VM subnet (10.0.0.64/26):
+#   - Port 80 for the Load Balancer listener (internet → LB).
+#   - SSH (22) for direct management.
+#   - NFS ports from vm-subnet itself (FSS mount target lives here).
+#   - NFS ports from cluster-subnet (10.0.0.128/26) for instance pool access.
+# Private Cluster subnet (10.0.0.128/26):
+#   - Port 8787 from vm-subnet (LB health checks and traffic → RStudio).
+#   - SSH from VCN CIDR for management via Bastion.
+# Private AD subnet (10.0.0.0/26):
+#   - Open ingress within VCN CIDR; NSG on DC handles granular port control.
 # ==============================================================================
 
 resource "oci_core_security_list" "vm_sl" {
   compartment_id = var.compartment_ocid
   vcn_id         = oci_core_vcn.ad_vcn.id
   display_name   = "vm-security-list"
+
+  # Load Balancer HTTP listener — internet clients reach the LB on port 80
+  ingress_security_rules {
+    protocol  = "6"
+    source    = "0.0.0.0/0"
+    stateless = false
+    tcp_options {
+      min = 80
+      max = 80
+    }
+  }
 
   ingress_security_rules {
     protocol  = "6"
@@ -103,17 +119,7 @@ resource "oci_core_security_list" "vm_sl" {
     }
   }
 
-  ingress_security_rules {
-    protocol  = "6"
-    source    = "0.0.0.0/0"
-    stateless = false
-    tcp_options {
-      min = 3389
-      max = 3389
-    }
-  }
-
-  # NFS portmapper (TCP) — required by FSS mount target
+  # NFS portmapper (TCP) from vm-subnet — required by FSS mount target
   ingress_security_rules {
     protocol  = "6"
     source    = "10.0.0.64/26"
@@ -124,7 +130,7 @@ resource "oci_core_security_list" "vm_sl" {
     }
   }
 
-  # NFS portmapper (UDP) — required by FSS mount target
+  # NFS portmapper (UDP) from vm-subnet
   ingress_security_rules {
     protocol  = "17"
     source    = "10.0.0.64/26"
@@ -135,7 +141,7 @@ resource "oci_core_security_list" "vm_sl" {
     }
   }
 
-  # NFS lockd/mountd/statd (TCP) — FSS uses ports 2048-2050
+  # NFS lockd/mountd/statd (TCP) from vm-subnet — FSS uses ports 2048-2050
   ingress_security_rules {
     protocol  = "6"
     source    = "10.0.0.64/26"
@@ -146,7 +152,7 @@ resource "oci_core_security_list" "vm_sl" {
     }
   }
 
-  # NFS (UDP) — FSS port 2048
+  # NFS (UDP) from vm-subnet — FSS port 2048
   ingress_security_rules {
     protocol  = "17"
     source    = "10.0.0.64/26"
@@ -157,14 +163,82 @@ resource "oci_core_security_list" "vm_sl" {
     }
   }
 
-  # SMB — Windows clients connect to the Linux Samba gateway on 445
+  # NFS portmapper (TCP) from cluster-subnet — instance pool mounts FSS here
+  ingress_security_rules {
+    protocol  = "6"
+    source    = "10.0.0.128/26"
+    stateless = false
+    tcp_options {
+      min = 111
+      max = 111
+    }
+  }
+
+  # NFS portmapper (UDP) from cluster-subnet
+  ingress_security_rules {
+    protocol  = "17"
+    source    = "10.0.0.128/26"
+    stateless = false
+    udp_options {
+      min = 111
+      max = 111
+    }
+  }
+
+  # NFS lockd/mountd/statd (TCP) from cluster-subnet
+  ingress_security_rules {
+    protocol  = "6"
+    source    = "10.0.0.128/26"
+    stateless = false
+    tcp_options {
+      min = 2048
+      max = 2050
+    }
+  }
+
+  # NFS (UDP) from cluster-subnet
+  ingress_security_rules {
+    protocol  = "17"
+    source    = "10.0.0.128/26"
+    stateless = false
+    udp_options {
+      min = 2048
+      max = 2048
+    }
+  }
+
+  egress_security_rules {
+    protocol    = "all"
+    destination = "0.0.0.0/0"
+    stateless   = false
+  }
+}
+
+# Security list for cluster instances — restricts inbound to LB traffic + SSH
+resource "oci_core_security_list" "cluster_sl" {
+  compartment_id = var.compartment_ocid
+  vcn_id         = oci_core_vcn.ad_vcn.id
+  display_name   = "cluster-security-list"
+
+  # RStudio port — LB health checks and proxied traffic from vm-subnet
   ingress_security_rules {
     protocol  = "6"
     source    = "10.0.0.64/26"
     stateless = false
     tcp_options {
-      min = 445
-      max = 445
+      min = 8787
+      max = 8787
+    }
+  }
+
+  # SSH management from within the VCN (Bastion or DC jump)
+  ingress_security_rules {
+    protocol  = "6"
+    source    = "10.0.0.0/24"
+    stateless = false
+    tcp_options {
+      min = 22
+      max = 22
     }
   }
 
@@ -198,10 +272,11 @@ resource "oci_core_security_list" "ad_sl" {
 # Subnets
 # ------------------------------------------------------------------------------
 # Public Subnet:
-#   - vm-subnet: Client workloads with public IP (Linux + Windows instances).
+#   - vm-subnet (10.0.0.64/26): Load Balancer and management instances.
 #
-# Private Subnet:
-#   - ad-subnet: Domain controller with NAT egress only.
+# Private Subnets:
+#   - cluster-subnet (10.0.0.128/26): RStudio instance pool (no public IPs).
+#   - ad-subnet (10.0.0.0/26): Domain controller with NAT egress only.
 # ==============================================================================
 
 resource "oci_core_subnet" "vm_subnet" {
@@ -212,6 +287,18 @@ resource "oci_core_subnet" "vm_subnet" {
   dns_label         = "vmsubnet"
   route_table_id    = oci_core_route_table.public_rt.id
   security_list_ids = [oci_core_security_list.vm_sl.id]
+}
+
+# Private subnet for RStudio instance pool — NAT provides outbound-only access
+resource "oci_core_subnet" "cluster_subnet" {
+  compartment_id             = var.compartment_ocid
+  vcn_id                     = oci_core_vcn.ad_vcn.id
+  cidr_block                 = "10.0.0.128/26"
+  display_name               = "cluster-subnet"
+  dns_label                  = "clustersubnet"
+  prohibit_public_ip_on_vnic = true
+  route_table_id             = oci_core_route_table.private_rt.id
+  security_list_ids          = [oci_core_security_list.cluster_sl.id]
 }
 
 resource "oci_core_subnet" "ad_subnet" {

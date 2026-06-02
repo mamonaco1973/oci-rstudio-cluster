@@ -1,11 +1,12 @@
 #!/bin/bash
 # ==============================================================================
-# destroy.sh - Xubuntu XRDP Infrastructure Teardown (OCI)
+# destroy.sh - RStudio Cluster Infrastructure Teardown (OCI)
 # ------------------------------------------------------------------------------
-# Destroys the environment in controlled order:
-#   1. Client compute instances (03-servers).
-#   2. Packer-built custom Xubuntu image.
-#   3. Active Directory resources and networking (01-directory).
+# Destroys the environment in controlled reverse order:
+#   1. RStudio cluster (04-cluster): LB and Instance Pool.
+#   2. Packer-built custom RStudio image.
+#   3. Servers (02-servers): FSS, Linux gateway, Windows client.
+#   4. Active Directory resources and networking (01-directory).
 #
 # WARNING: This action is destructive and irreversible.
 # ==============================================================================
@@ -29,16 +30,15 @@ export TF_VAR_compartment_ocid="$OCI_COMPARTMENT_ID"
 TENANCY_OCID=$(awk -F'=' '/^tenancy[[:space:]]*=/{gsub(/[[:space:]]/, "", $2); print $2; exit}' ~/.oci/config)
 export TF_VAR_tenancy_ocid="$TENANCY_OCID"
 
-# TF_VAR_xubuntu_image_ocid must be set for terraform destroy to parse the plan;
-# use a placeholder — the actual resource was already tracked in state.
-export TF_VAR_xubuntu_image_ocid="ocid1.image.placeholder"
+# TF_VAR_rstudio_image_ocid must be set for terraform destroy to parse the plan
+export TF_VAR_rstudio_image_ocid="ocid1.image.placeholder"
 
 # ------------------------------------------------------------------------------
-# Phase 1: Destroy Compute Instances
+# Phase 1: Destroy RStudio Cluster
 # ------------------------------------------------------------------------------
-echo "NOTE: Destroying OCI compute instances..."
+echo "NOTE: Destroying RStudio cluster (LB, Instance Pool)..."
 
-cd 03-servers || { echo "ERROR: Directory 03-servers not found"; exit 1; }
+cd 04-cluster || { echo "ERROR: Directory 04-cluster not found"; exit 1; }
 
 terraform init
 terraform destroy -auto-approve
@@ -46,22 +46,21 @@ terraform destroy -auto-approve
 cd ..
 
 # ------------------------------------------------------------------------------
-# Phase 2: Delete Packer-Built Custom Images
+# Phase 2: Delete Packer-Built Custom Image
 # ------------------------------------------------------------------------------
-# Removes all custom images named "xubuntu-image" from the compartment.
-# These are not managed by Terraform so must be deleted via OCI CLI.
+# The rstudio-image is not managed by Terraform — must be deleted via OCI CLI.
 # ------------------------------------------------------------------------------
-echo "NOTE: Deleting Packer-built custom images..."
+echo "NOTE: Deleting Packer-built RStudio custom image..."
 
 IMAGE_IDS=$(oci compute image list \
   --compartment-id "$OCI_COMPARTMENT_ID" \
   --lifecycle-state "AVAILABLE" \
   --all \
   --raw-output \
-  | jq -r '.data[] | select(."display-name" == "xubuntu-image") | .id')
+  | jq -r '.data[] | select(."display-name" == "rstudio-image") | .id')
 
 if [ -z "$IMAGE_IDS" ]; then
-  echo "NOTE: No xubuntu-image custom images found."
+  echo "NOTE: No rstudio-image custom images found."
 else
   for IMAGE_ID in $IMAGE_IDS; do
     echo "NOTE: Deleting image: $IMAGE_ID"
@@ -70,7 +69,19 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Phase 3: Destroy Active Directory Infrastructure
+# Phase 3: Destroy Servers (FSS, Linux gateway, Windows client)
+# ------------------------------------------------------------------------------
+echo "NOTE: Destroying servers (FSS, Linux gateway, Windows client)..."
+
+cd 02-servers || { echo "ERROR: Directory 02-servers not found"; exit 1; }
+
+terraform init
+terraform destroy -auto-approve
+
+cd ..
+
+# ------------------------------------------------------------------------------
+# Phase 4: Destroy Active Directory Infrastructure
 # ------------------------------------------------------------------------------
 echo "NOTE: Destroying Active Directory resources and networking..."
 

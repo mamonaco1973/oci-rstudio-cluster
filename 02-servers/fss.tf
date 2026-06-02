@@ -3,9 +3,11 @@
 # ------------------------------------------------------------------------------
 # Purpose:
 #   - Provisions a managed NFS file system equivalent to AWS EFS.
-#   - Exposes a /nfs export shared across all RStudio instance pool instances.
-#   - /nfs/home is symlinked to /home so AD user home dirs persist on FSS.
-#   - /nfs/rlibs is the shared R library directory for rstudio-admins installs.
+#   - Exposes a /nfs export path shared across all instances.
+#   - Linux instance mounts /nfs and re-exports via Samba (SMB)
+#     so Windows clients can map Z: to \\<linux-ip>\nfs.
+#   - 04-cluster RStudio instances also mount /nfs for shared home dirs
+#     and the /nfs/rlibs shared R package library.
 #
 # Scope:
 #   - FSS file system (encrypted at rest by default in OCI)
@@ -14,10 +16,8 @@
 #
 # Notes:
 #   - OCI FSS requires 3 resources: file_system + mount_target + export(s).
-#   - NFS ports (111, 2048-2050) must be open in vm-subnet security list
-#     for both vm-subnet (10.0.0.64/26) and cluster-subnet (10.0.0.128/26).
-#   - Mount target IP is computed after apply — passed to instance config
-#     via templatefile so every pool instance mounts the same FSS endpoint.
+#   - NFS ports (111, 2048-2050) must be open in the vm-subnet security list.
+#   - Mount target IP is output so 04-cluster can reference it via remote state.
 # ==============================================================================
 
 resource "oci_file_storage_file_system" "fss" {
@@ -26,9 +26,8 @@ resource "oci_file_storage_file_system" "fss" {
   display_name        = "rstudio-fss"
 }
 
-# Mount target in vm-subnet — both the LB and FSS share this subnet.
-# NFS clients (cluster instances) connect to the mount target IP from
-# cluster-subnet via the VCN routing fabric.
+# Lives in vm-subnet so the Linux gateway and FSS mount target share the
+# same subnet security list rules for NFS traffic.
 resource "oci_file_storage_mount_target" "fss_mt" {
   availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
   compartment_id      = local.compartment_ocid
@@ -36,8 +35,9 @@ resource "oci_file_storage_mount_target" "fss_mt" {
   display_name        = "rstudio-fss-mt"
 }
 
-# /nfs export — rstudio_booter.sh mounts this at /nfs, then creates
-# /nfs/home (symlinked to /home) and /nfs/rlibs (shared R library).
+# /nfs — shared data directory; Linux gateway re-exports via Samba to Windows.
+# /nfs/home is symlinked to /home so AD user homes live on FSS.
+# /nfs/rlibs is the shared R library created by 04-cluster's rstudio_booter.sh.
 resource "oci_file_storage_export" "nfs_export" {
   export_set_id  = oci_file_storage_mount_target.fss_mt.export_set_id
   file_system_id = oci_file_storage_file_system.fss.id

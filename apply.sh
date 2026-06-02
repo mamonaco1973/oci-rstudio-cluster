@@ -1,11 +1,12 @@
 #!/bin/bash
 # ==============================================================================
-# apply.sh - Xubuntu XRDP Deployment Orchestration (OCI)
+# apply.sh - RStudio Cluster Deployment Orchestration (OCI)
 # ------------------------------------------------------------------------------
-# Three-phase build:
-#   1. Deploy Active Directory resources with Terraform.
-#   2. Build a Xubuntu custom image with Packer (oracle-oci plugin).
-#   3. Deploy OCI compute instances using the Packer-built image.
+# Four-phase build:
+#   1. Deploy Active Directory resources (01-directory).
+#   2. Deploy FSS, Linux Samba gateway, and Windows client (02-servers).
+#   3. Build the RStudio Server custom image with Packer (03-packer).
+#   4. Deploy OCI Load Balancer and Instance Pool (04-cluster).
 # ==============================================================================
 
 set -euo pipefail
@@ -52,10 +53,6 @@ terraform apply -auto-approve \
   -target=local_file.private_key \
   -target=local_file.public_key \
   -target=random_password.admin_password \
-  -target=random_password.jsmith_password \
-  -target=random_password.edavis_password \
-  -target=random_password.rpatel_password \
-  -target=random_password.akumar_password \
   -target=random_password.windows_local_admin_password
 
 terraform apply -auto-approve
@@ -63,10 +60,19 @@ terraform apply -auto-approve
 cd ..
 
 # ------------------------------------------------------------------------------
-# Phase 2: Build Xubuntu Custom Image with Packer
+# Phase 2: Deploy Servers (FSS + Linux Gateway + Windows Client)
 # ------------------------------------------------------------------------------
-# Resolve the build parameters from OCI CLI + 01-directory outputs before
-# invoking Packer so the build instance lands in the correct subnet.
+echo "NOTE: Deploying FSS, Linux gateway, and Windows client..."
+
+cd 02-servers || { echo "ERROR: Directory 02-servers not found"; exit 1; }
+
+terraform init
+terraform apply -auto-approve
+
+cd ..
+
+# ------------------------------------------------------------------------------
+# Phase 3: Build RStudio Server Custom Image with Packer
 # ------------------------------------------------------------------------------
 echo "NOTE: Resolving Packer build parameters..."
 
@@ -93,17 +99,17 @@ echo "NOTE: Availability domain : $AD"
 echo "NOTE: Base image OCID     : $BASE_IMAGE_OCID"
 echo "NOTE: Subnet OCID         : $SUBNET_OCID"
 
-cd 02-packer || { echo "ERROR: Directory 02-packer not found"; exit 1; }
+cd 03-packer || { echo "ERROR: Directory 03-packer not found"; exit 1; }
 
-echo "NOTE: Building Xubuntu custom image with Packer..."
+echo "NOTE: Building RStudio Server custom image with Packer..."
 
-packer init ./xubuntu_ami.pkr.hcl
+packer init ./rstudio_image.pkr.hcl
 packer build \
   -var "compartment_ocid=$OCI_COMPARTMENT_ID" \
   -var "availability_domain=$AD" \
   -var "base_image_ocid=$BASE_IMAGE_OCID" \
   -var "subnet_ocid=$SUBNET_OCID" \
-  ./xubuntu_ami.pkr.hcl || {
+  ./rstudio_image.pkr.hcl || {
     echo "ERROR: Packer build failed. Aborting."
     cd ..
     exit 1
@@ -112,26 +118,26 @@ packer build \
 cd ..
 
 # Resolve the OCID of the image Packer just created
-XUBUNTU_IMAGE_OCID=$(oci compute image list \
+RSTUDIO_IMAGE_OCID=$(oci compute image list \
   --compartment-id "$OCI_COMPARTMENT_ID" \
   --lifecycle-state "AVAILABLE" \
   --all \
   --raw-output \
-  | jq -r '[.data[] | select(."display-name" == "xubuntu-image")] | sort_by(."time-created") | last | .id')
+  | jq -r '[.data[] | select(."display-name" == "rstudio-image")] | sort_by(."time-created") | last | .id')
 
-if [ -z "$XUBUNTU_IMAGE_OCID" ] || [ "$XUBUNTU_IMAGE_OCID" = "null" ]; then
-  echo "ERROR: Could not find xubuntu-image in OCI compute images after Packer build."
+if [ -z "$RSTUDIO_IMAGE_OCID" ] || [ "$RSTUDIO_IMAGE_OCID" = "null" ]; then
+  echo "ERROR: Could not find rstudio-image in OCI compute images after Packer build."
   exit 1
 fi
-export TF_VAR_xubuntu_image_ocid="$XUBUNTU_IMAGE_OCID"
-echo "NOTE: Xubuntu image OCID  : $XUBUNTU_IMAGE_OCID"
+export TF_VAR_rstudio_image_ocid="$RSTUDIO_IMAGE_OCID"
+echo "NOTE: RStudio image OCID  : $RSTUDIO_IMAGE_OCID"
 
 # ------------------------------------------------------------------------------
-# Phase 3: Deploy OCI Compute Instances
+# Phase 4: Deploy RStudio Cluster (Load Balancer + Instance Pool)
 # ------------------------------------------------------------------------------
-echo "NOTE: Deploying OCI compute instances..."
+echo "NOTE: Deploying RStudio cluster (LB + Instance Pool)..."
 
-cd 03-servers || { echo "ERROR: Directory 03-servers not found"; exit 1; }
+cd 04-cluster || { echo "ERROR: Directory 04-cluster not found"; exit 1; }
 
 terraform init
 terraform apply -auto-approve
