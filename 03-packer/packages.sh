@@ -18,7 +18,23 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
-apt-get update -y
+# Disable automatic updates and kill any in-flight apt processes —
+# OCI fires cloud-init fast enough that apt-daily may hold the lock
+# before Packer's provisioner runs.
+systemctl disable --now apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
+pkill -9 -f unattended-upgrades 2>/dev/null || true
+pkill -9 -f apt 2>/dev/null || true
+sleep 2
+
+# OCI NAT gateway does not route IPv6 — force IPv4 for all apt traffic
+echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+
+for i in {1..20}; do
+  apt-get update -y -o APT::Update::Error-Mode=any && break
+  echo "apt-get update failed (attempt $i/20), killing apt and retrying in 30s..."
+  pkill -9 -f apt 2>/dev/null || true
+  sleep 30
+done
 
 echo "=== Phase 1: Base utilities and AD join tools ==="
 apt-get install -y \
