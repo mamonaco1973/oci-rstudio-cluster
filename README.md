@@ -14,6 +14,8 @@ Key capabilities demonstrated:
 
 Together, this architecture provides a reproducible, cloud-native RStudio environment where users get both personal home-directory libraries and access to a shared, scalable package repository.
 
+![Architecture](oci-rstudio-cluster.png)
+
 ## Prerequisites
 
 * [An OCI Account](https://cloud.oracle.com/)
