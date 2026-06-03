@@ -52,4 +52,7 @@ EOF
 
 chmod +x /etc/pam.d/rstudio-mkhomedir.sh
 
+# Bake ~/nfs symlink into skel so every AD user gets it on first login
+ln -sf /nfs /etc/skel/nfs
+
 echo "=== rstudio.sh completed successfully ==="

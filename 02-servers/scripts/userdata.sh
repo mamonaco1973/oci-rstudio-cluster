@@ -156,6 +156,7 @@ fi
 # Avoid XAuthority warning for new users
 touch /etc/skel/.Xauthority
 chmod 600 /etc/skel/.Xauthority
+ln -sf /nfs /etc/skel/nfs
 
 pam-auth-update --enable mkhomedir || true
 systemctl restart sssd || true
@@ -289,7 +290,6 @@ netfilter-persistent save
 
 realm list || true
 
-ln -sf /nfs /etc/skel/nfs
 mkdir -p /home/ubuntu
 chown -R ubuntu:ubuntu /home/ubuntu || true
 
