@@ -132,6 +132,10 @@ fi
 touch /etc/skel/.Xauthority
 chmod 600 /etc/skel/.Xauthority
 
+# Symlink ~/nfs into every new user's home so R samples and shared data
+# are immediately visible in the RStudio file browser after first login
+ln -sf /nfs /etc/skel/nfs
+
 pam-auth-update --enable mkhomedir || true
 systemctl restart sssd || true
 systemctl restart ssh || systemctl restart sshd || true
