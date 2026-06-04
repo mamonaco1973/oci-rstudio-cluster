@@ -18,13 +18,14 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
-# Disable automatic updates and kill any in-flight apt processes —
-# OCI fires cloud-init fast enough that apt-daily may hold the lock
-# before Packer's provisioner runs.
-systemctl disable --now apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
+# Kill and permanently mask all automatic update services so they can
+# never grab the dpkg lock during or after this Packer build.
+systemctl stop apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service 2>/dev/null || true
+systemctl mask apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service 2>/dev/null || true
 pkill -9 -f unattended-upgrades 2>/dev/null || true
 pkill -9 -f apt 2>/dev/null || true
 sleep 2
+DEBIAN_FRONTEND=noninteractive apt-get purge -y unattended-upgrades 2>/dev/null || true
 
 # OCI NAT gateway does not route IPv6 — force IPv4 for all apt traffic
 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
