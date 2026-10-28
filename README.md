@@ -1,197 +1,165 @@
-# OCI RStudio Cluster
+# RStudio Server Cluster on OCI: Instance Pool, File Storage and Active Directory
 
-This project extends the original **OCI Mini Active Directory** lab by deploying an **RStudio Server cluster** on Oracle Cloud Infrastructure (OCI). The cluster is designed for data science and analytics workloads, where multiple users need a scalable, domain-joined environment with consistent package management.
+An **RStudio Server** cluster for shared data-science work, built on the
+[OCI Mini Active Directory](https://github.com/mamonaco1973/oci-mini-ad)
+lab. A flexible **OCI load balancer** spreads users across an autoscaling
+**instance pool** of RStudio instances built from a **Packer** image; every
+instance joins a **mini-AD** domain, so users sign in with their AD accounts,
+and mounts the same **OCI File Storage** export for home directories, shared
+data and a shared R package library. A Windows VM and a Samba gateway give
+admins access to the same files.
 
-![RStudio](rstudio.png)
+![RStudio Server](rstudio.png)
 
-Instead of relying only on per-user libraries stored on ephemeral instance disks, this solution integrates **OCI File Storage Service (FSS)** as a shared package and data backend. This allows RStudio nodes in an Instance Pool to mount a common FSS location, ensuring that installed R packages and project files are accessible across all nodes.
+| Piece | Where | Role |
+|---|---|---|
+| **rstudio-lb** | public | flexible load balancer (10 to 100 Mbps); HTTP 80; round robin to 8787 with the `RSTUDIO_SESSION` cookie; health check `/` |
+| **rstudio-pool** | `cluster-subnet` (`10.0.0.128/26`, private) | instance pool from `rstudio-instance-config`: `VM.Standard.E4.Flex`, 2 OCPUs and 8 GB; 2 to 4 instances, adds one above 60% CPU and removes one below 10% |
+| **rstudio-image** | built by Packer | R (latest CRAN), RStudio Server (open source), and the AD and NFS packages |
+| **rstudio-fss** | File Storage | file system, mount target `rstudio-fss-mt` and export `/nfs`, mounted over NFSv3 |
+| **smb-gateway-&lt;hex&gt;** | `vm-subnet` (`10.0.0.64/26`, public) | Ubuntu, E4.Flex 1 OCPU / 4 GB, public IP; joined to AD; mounts the export and serves `/nfs` over Samba |
+| **win-&lt;hex&gt;** | `vm-subnet` | Windows Server 2022, E4.Flex 2 OCPU / 8 GB, public IP; joined to AD; maps the gateway's share as `Z:` |
+| **mini-AD** | private AD subnet | [`module-oci-mini-ad`](https://github.com/mamonaco1973/module-oci-mini-ad) Samba DC for `mcloud.mikecloud.com` (`MCLOUD`) |
+| **OCI Bastion** | VCN | SSH port forwarding to the domain controller, used by `connect.sh` |
+| **mini-ad-vcn** | `10.0.0.0/24` | internet gateway for the VM subnet, NAT gateway for the private ones |
 
-Key capabilities demonstrated:
+## Architecture
 
-1. **RStudio Server Cluster with Load Balancer** – RStudio Server (Open Source Edition) deployed across multiple OCI compute instances, fronted by an OCI Load Balancer for high availability and seamless user access.
-2. **FSS-Backed Shared Library** – FSS mounted at `/nfs/rlibs` and injected into `.libPaths()`, enabling shared R package storage across the cluster.
-3. **Mini Active Directory Integration** – A Samba-based mini-AD domain controller provides authentication and DNS, so RStudio logins are domain-based and centrally managed.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="architecture-dark.svg">
+  <img alt="RStudio users reach rstudio-lb, a public flexible OCI load balancer on HTTP port 80 with cookie session persistence, which forwards round robin to port 8787 on rstudio-pool, an instance pool of two to four VM.Standard.E4.Flex instances in a private subnet, built from the Packer rstudio-image and scaled on CPU. Each instance boots from an instance configuration whose user data carries the boot script and the AD join password, joins the mini-AD Samba domain controller with SSSD, and mounts the rstudio-fss File Storage export over NFSv3 for /home and the shared R library /nfs/rlibs. Administrators RDP to the Windows VM, which maps the Samba gateway's share as drive Z:; the gateway mounts the same export and is also joined to the domain. The domain controller is reached through OCI Bastion." src="architecture-light.svg">
+</picture>
 
-Together, this architecture provides a reproducible, cloud-native RStudio environment where users get both personal home-directory libraries and access to a shared, scalable package repository.
+Regenerate with `python3 make_diagram.py`. The gateway and Windows VM also
+join the domain; those lines are left off the diagram to keep it readable.
 
-![Architecture](oci-rstudio-cluster.png)
+- **`01-directory/`**: the VCN, subnets, gateways and security lists, OCI
+  Bastion, the SSH key pair (written to `keys/`, gitignored), random
+  passwords, and the mini-AD DC with users and groups from
+  `scripts/users.json.template`.
+- **`02-servers/`**: File Storage, the gateway and Windows instances, and
+  their network security groups.
+- **`03-packer/`**: the RStudio image (`rstudio_image.pkr.hcl` and its
+  install scripts).
+- **`04-cluster/`**: the instance configuration, pool and autoscaling, the
+  load balancer, and `scripts/rstudio_booter.sh`.
+- **`05-rsamples/`**: sample R scripts and `packages.R`.
+- **`06-utils/`**: `getNextUID` / `getNextGID` scripts for adding AD users.
+- **`connect.sh`**: opens a Bastion session and SSH tunnel to the domain
+  controller (or another private IP you pass).
+- **`get_password.sh <user>`**: prints a user's password from Terraform
+  state (`admin`, `ubuntu`, `jsmith`, `edavis`, `rpatel`, `akumar`,
+  `windows_local_admin`).
+
+## How an instance starts
+
+The instance configuration's user data runs `rstudio_booter.sh`, which
+mounts the export as `/nfs` (and its `home` directory as `/home`), joins the
+domain with `realm join` using the admin password templated into it, sets up
+SSSD with short names and the POSIX IDs from AD, gives `linux-admins`
+passwordless sudo, and writes `Rprofile.site` so the library path is the
+user's own library, then `/nfs/rlibs`, then the system library.
+`/nfs/rlibs` belongs to `rstudio-admins`.
+
+## Users and groups
+
+| User | uidNumber | Groups | Notes |
+|---|---|---|---|
+| jsmith | 10001 | mcloud-users, us, linux-admins, rstudio-admins, Domain Admins | sudo; writes `/nfs/rlibs` |
+| edavis | 10002 | mcloud-users, us | |
+| rpatel | 10003 | mcloud-users, india, linux-admins, rstudio-admins, Domain Admins | sudo; writes `/nfs/rlibs` |
+| akumar | 10004 | mcloud-users, india | |
+
+| Group | gidNumber |
+|---|---|
+| mcloud-users | 10001 (every user's primary group) |
+| us | 10002 |
+| india | 10003 |
+| linux-admins | 10004 |
+| rstudio-admins | 10005 |
 
 ## Prerequisites
 
 * [An OCI Account](https://cloud.oracle.com/)
-* [Install OCI CLI](https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/cliinstall.htm)
-* [Install Latest Terraform](https://developer.hashicorp.com/terraform/install)
-* [Install Latest Packer](https://developer.hashicorp.com/packer/install)
+* [Install OCI CLI](https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/cliinstall.htm),
+  configured with a `DEFAULT` profile in `~/.oci/config`
+* [Install Terraform](https://developer.hashicorp.com/terraform/install)
+* [Install Packer](https://developer.hashicorp.com/packer/install)
+* [Install jq](https://jqlang.github.io/jq/download/)
 
-## Build Workflow
-
-Four-phase deployment:
-
-1. **01-directory** — Active Directory (mini-AD DC), VCN, subnets, bastion, SSH keys, passwords
-2. **02-servers** — FSS file system, Linux Samba gateway, Windows AD client
-3. **03-packer** — Builds the `rstudio-image` custom OCI compute image (R + RStudio Server + AD packages)
-4. **04-cluster** — OCI Load Balancer, Instance Pool (autoscaling), domain join at boot
-
-## Download this Repository
+## Deploy
 
 ```bash
 git clone https://github.com/mamonaco1973/oci-rstudio-cluster.git
 cd oci-rstudio-cluster
-```
-
-## Build the Code
-
-Run [check_env](check_env.sh) to validate your environment, then run [apply](apply.sh) to provision the infrastructure.
-
-```bash
 ./apply.sh
 ```
 
-### Build Results
+`apply.sh` applies `01-directory` and `02-servers`, builds `rstudio-image`
+with Packer, and applies `04-cluster`. It ends by running `validate.sh`,
+which prints a summary:
 
-When the deployment completes, the following resources are created:
+```
+============================================================================
+RStudio Cluster - Deployment Summary
+============================================================================
 
-- **Networking:**
-  - A VCN with public (vm-subnet), private (cluster-subnet), and management subnets
-  - Internet Gateway for public subnet; NAT Gateway for private cluster instances
-  - Route tables and security lists scoped to required ports
-  - DNS resolution provided by the Mini-AD domain controller
+  Domain Controller (private)
+    IP       : 10.0.0.x
+    Connect  : ./connect.sh
 
-- **Active Directory Server:**
-  - Ubuntu A1.Flex instance running Samba 4 as a Domain Controller and DNS server
-  - Configured Kerberos realm and NetBIOS name for centralized authentication
-  - Integrated with the RStudio cluster for domain-based logins
+  Linux Samba Gateway (public)
+    IP       : 129.x.x.x
+    SSH      : ssh -i 01-directory/keys/Private_Key ubuntu@129.x.x.x
+    NFS/SMB  : Z: drive on Windows maps to \\129.x.x.x\nfs
 
-- **OCI File Storage Service (FSS):**
-  - FSS file system with a mount target in vm-subnet
-  - Single `/nfs` export mounted by the Samba gateway and all cluster instances
-  - `/nfs/home` symlinked to `/home` — AD user home directories persist across Instance Pool scale events
-  - `/nfs/rlibs` shared R library path, writable by `rstudio-admins` group members
+  Windows AD Client (public)
+    IP       : 129.x.x.x
+  ...
+```
 
-- **Linux Samba Gateway:**
-  - Ubuntu E4.Flex instance in vm-subnet (public IP)
-  - Mounts FSS at `/nfs` and re-exports it as a Samba SMB share (`\\<ip>\nfs`)
-  - Domain-joined via `realm join`; Windows client maps `Z:` to the SMB share
+## Try it
 
-- **Windows AD Client:**
-  - Windows Server 2022 E4.Flex instance in vm-subnet (public IP)
-  - Domain-joined at boot; `Z:` drive mapped to `\\samba-gateway\nfs`
-  - Used for Active Directory Users and Computers administration
+1. Open `http://<load balancer IP>` and sign in as one of the users above;
+   `./get_password.sh jsmith` prints the password.
+2. Open a sample from `05-rsamples`; the gateway clones this repository
+   into the export.
+3. Add a user:
+   1. RDP to the Windows VM as `jsmith` or `rpatel` and open **Active
+      Directory Users and Computers** with **View > Advanced Features** on.
+   2. Under the domain's **Users** container, create the user with a UPN
+      such as `mcloud@mcloud.mikecloud.com` and an initial password.
 
-- **Custom RStudio Image:**
-  - Built with Packer: R (latest from CRAN), RStudio Server (Open Source Edition), AD/NFS packages
-  - PAM configured for SSSD/AD authentication with automatic home-directory creation on FSS
-  - `/etc/skel/nfs` symlink baked in so every new AD user gets `~/nfs` on first login
+      ![New user in Active Directory Users and Computers](windows.png)
 
-- **RStudio Instance Pool + Load Balancer:**
-  - OCI flexible Load Balancer (port 80) with sticky LB cookie sessions
-  - Instance Pool of E4.Flex 2c/8GB instances in the private cluster-subnet
-  - Autoscaling: CPU > 60% → scale up, CPU < 10% → scale down; min=2, max=4
-  - Each instance domain-joins at boot, mounts FSS, and starts RStudio Server
+   3. Run `Z:\oci-rstudio-cluster\06-utils\getNextUID.bat` for the next
+      free `uidNumber`.
+   4. In **Attribute Editor**, set `uidNumber` to that value, `gidNumber` to
+      `10001`, and `uid` to the login name.
+   5. Under **Member Of**, add `mcloud-users` and any other groups.
+   6. SSH to the gateway and check the mapping with `id mcloud`:
 
-### Users and Groups
+      ![id output on the Linux gateway](linux.png)
 
-As part of this project, when the domain controller is provisioned, a set of sample **users** and **groups** are automatically created through Terraform-provisioned scripts. These resources are intended for **testing and demonstration purposes**.
+   7. Sign in to RStudio as the new user. They can't write `/nfs/rlibs`
+      until they're in `rstudio-admins`.
 
-#### Groups Created
-
-| Group Name      | Group Category | Group Scope | gidNumber |
-|-----------------|----------------|-------------|-----------|
-| rstudio-users   | Security       | Universal   | 10001     |
-| india           | Security       | Universal   | 10002     |
-| us              | Security       | Universal   | 10003     |
-| linux-admins    | Security       | Universal   | 10004     |
-| rstudio-admins  | Security       | Universal   | 10005     |
-
-#### Users Created and Group Memberships
-
-| Username | Full Name   | uidNumber | gidNumber | Groups Joined                                      |
-|----------|-------------|-----------|-----------|-----------------------------------------------------|
-| jsmith   | John Smith  | 10001     | 10001     | rstudio-users, us, linux-admins, rstudio-admins    |
-| edavis   | Emily Davis | 10002     | 10001     | rstudio-users, us                                  |
-| rpatel   | Raj Patel   | 10003     | 10001     | rstudio-users, india, linux-admins, rstudio-admins |
-| akumar   | Amit Kumar  | 10004     | 10001     | rstudio-users, india                               |
-
-#### Understanding `uidNumber` and `gidNumber` for Linux Integration
-
-The **`uidNumber`** and **`gidNumber`** attributes are critical when integrating Active Directory with Linux systems using **SSSD**. These attributes allow Linux hosts to recognize and map AD users and groups into the POSIX user and group model.
-
-### Creating a New RStudio User
-
-Follow these steps to provision a new user in the Active Directory domain and validate their access to the RStudio cluster:
-
-1. **Connect to the Domain Controller**
-   - Log into the **Windows AD client** via Remote Desktop (RDP).
-   - Use the `rpatel` or `jsmith` credentials provisioned during deployment.
-
-2. **Launch Active Directory Users and Computers (ADUC)**
-   - From the Windows Start menu, open **"Active Directory Users and Computers."**
-   - Enable **Advanced Features** under the **View** menu to access the Attribute Editor tab.
-
-3. **Navigate to the Users Organizational Unit (OU)**
-   - Expand the domain (e.g., `mcloud.mikecloud.com`).
-   - Select the **Users** OU where all cluster accounts are managed.
-
-4. **Create a New User Object**
-   - Right-click the Users OU and choose **New → User.**
-   - Provide:
-     - **Full Name:** e.g., "Mike Cloud"
-     - **User Logon Name (UPN):** e.g., `mcloud@mcloud.mikecloud.com`
-     - **Initial Password:** Set an initial password.
-
-![Windows](windows.png)
-
-5. **Assign a Unique UID Number**
-   - Open **PowerShell** on the Windows AD client.
-   - Run the script located on the `Z:` drive:
-     ```powershell
-     Z:\nfs\oci-rstudio-cluster\06-utils\getNextUID.bat
-     ```
-   - This returns the next available **`uidNumber`** to assign to the new account.
-
-6. **Configure Advanced Attributes**
-   - In the new user's **Properties** dialog, open the **Attribute Editor** tab.
-   - Set:
-     - `gidNumber` → **10001** (shared GID for `rstudio-users`)
-     - `uid` → match the AD login name (e.g., `mcloud`)
-     - `uidNumber` → the value returned from `getNextUID`
-
-7. **Add Group Memberships**
-   - Go to the **Member Of** tab.
-   - Add the user to **rstudio-users** (grants standard RStudio access) and any geographic/departmental group.
-
-8. **Validate User on Linux**
-   - SSH to the Linux Samba gateway:
-     ```bash
-     ssh -i 01-directory/keys/Private_Key ubuntu@<linux_public_ip>
-     ```
-   - Confirm the user's identity mapping:
-     ```bash
-     id mcloud
-     ```
-   - Verify the output shows the correct UID, GID, and group memberships.
-
-![Linux](linux.png)
-
-9. **Validate RStudio Access**
-   - Open the Load Balancer URL in a browser (shown by `./validate.sh`):
-     ```
-     http://<lb-public-ip>
-     ```
-   - Log in with the new AD credentials.
-
-10. **Verify Permissions**
-    - By default, the new user is **not** in `rstudio-admins`.
-    - Attempting to install packages into `/nfs/rlibs` will fail with a **"Permission denied"** error, confirming they are restricted to their personal user library.
-
-> **Note:** To grant shared-library install rights, add the user to **rstudio-admins** in addition to `rstudio-users`.
-
-### Clean Up Infrastructure
-
-When you are finished testing, remove all provisioned resources with:
+## Teardown
 
 ```bash
 ./destroy.sh
 ```
 
-This deletes the Instance Pool, Load Balancer, custom Packer image, FSS file system, compute instances, and all networking resources.
+`destroy.sh` destroys `04-cluster`, deletes the Packer image, then destroys
+`02-servers` and `01-directory`.
+
+## Notes
+
+- **Lab only.** RStudio is served over plain HTTP. SSH (22) and HTTP (80)
+  on the VM subnet and RDP (3389) on the Windows VM are open to
+  `0.0.0.0/0`, and the Bastion accepts sessions from any address.
+- There's no Vault: passwords live in Terraform state, and the AD admin
+  password is templated into the instance configuration's user data, so
+  anyone who can read the instance metadata can read it.
+- The old README listed `india` as 10002 and `us` as 10003; the template
+  sets `us` to 10002 and `india` to 10003.
